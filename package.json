@@ -45,6 +45,10 @@
       {
         "command": "clippy.dismiss",
         "title": "Clippy: Dismiss"
+      },
+      {
+        "command": "clippy.resetLevel",
+        "title": "Clippy: Reset Level"
       }
     ],
     "configuration": {

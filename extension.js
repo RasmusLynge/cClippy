@@ -15,6 +15,39 @@ const IMAGE_BOUNCES = {
   'WinkClippy.png': 'tilt'
 };
 
+/**
+ * The career ladder, from rock bottom to the top. Everyone starts as an Intern;
+ * good code climbs a level, bad code slides down one.
+ */
+const LEVELS = [
+  { name: 'Comic Sans Developer', emoji: '🤡' },
+  { name: 'Printer Whisperer', emoji: '🖨️' },
+  { name: '"Works on My Machine" Specialist', emoji: '🤷' },
+  { name: 'PowerPoint Architect', emoji: '📊' },
+  { name: 'Excel Guru', emoji: '📗' },
+  { name: 'Stack Overflow Copy-Paster', emoji: '📋' },
+  { name: 'Vibe Coder', emoji: '🌈' },
+  { name: 'Intern', emoji: '☕' },
+  { name: 'Junior Dev', emoji: '🐣' },
+  { name: 'Mid-Level Dev', emoji: '💻' },
+  { name: 'Senior Dev', emoji: '🧔' },
+  { name: 'Staff Engineer', emoji: '🛠️' },
+  { name: 'Principal Engineer', emoji: '🏛️' },
+  { name: '10x Engineer', emoji: '🚀' },
+  { name: 'Code Wizard', emoji: '🧙' },
+  { name: 'Clippy\'s Chosen One', emoji: '📎' }
+];
+const INTERN = LEVELS.findIndex((l) => l.name === 'Intern');
+/** globalState key holding the level, counted from Intern so reordering the ladder keeps people's progress. */
+const LEVEL_KEY = 'clippy.level';
+
+/** Index into LEVELS. */
+let level = INTERN;
+/** How the level just moved (1 up, -1 down, 0 not at all); the Clippy view celebrates it once. */
+let levelChange = 0;
+/** Shows the level in the status bar. @type {vscode.StatusBarItem} */
+let levelStatus;
+
 /** Highlights the lines Clippy's suggestion is about. @type {vscode.TextEditorDecorationType} */
 let suggestionDecoration;
 const codeLensesChanged = new vscode.EventEmitter();
@@ -55,6 +88,7 @@ let pendingSuggestion;
  * @property {number} endLine 1-based last file line the change affects; 0 when unknown or none.
  * @property {'replace' | 'delete' | 'none'} change Replace lines line..endLine with codeExample, delete them, or nothing to implement.
  * @property {string} codeExample Replacement code when change is 'replace'; empty otherwise.
+ * @property {'good' | 'meh' | 'bad'} verdict Clippy's judgement of the code: good levels the developer up, bad levels them down.
  */
 
 /**
@@ -96,9 +130,10 @@ async function askOllama(fileText, fileName) {
           line: { type: 'integer' },
           endLine: { type: 'integer' },
           change: { type: 'string', enum: ['replace', 'delete', 'none'] },
-          codeExample: { type: 'string' }
+          codeExample: { type: 'string' },
+          verdict: { type: 'string', enum: ['good', 'meh', 'bad'] }
         },
-        required: ['message', 'image', 'recommendation', 'line', 'endLine', 'change', 'codeExample']
+        required: ['message', 'image', 'recommendation', 'line', 'endLine', 'change', 'codeExample', 'verdict']
       }
     })
   });
@@ -150,7 +185,13 @@ async function askOllama(fileText, fileName) {
   } else {
     message = `Looks like ${message.charAt(0).toLowerCase()}${message.slice(1)}`;
   }
-  return { message, image, recommendation, line, endLine, change, codeExample };
+  // Code with something to fix can't be "good"; without a usable verdict, judge by whether there's a recommendation.
+  /** @type {ClippyReply['verdict']} */
+  let verdict = ['good', 'meh', 'bad'].includes(reply.verdict) ? reply.verdict : recommendation ? 'meh' : 'good';
+  if (verdict === 'good' && recommendation) {
+    verdict = 'meh';
+  }
+  return { message, image, recommendation, line, endLine, change, codeExample, verdict };
 }
 
 /**
@@ -182,6 +223,28 @@ function renderSuggestion() {
 }
 
 /**
+ * Moves the developer up a level for good code or down one for bad code, and remembers it.
+ * @param {vscode.ExtensionContext} context
+ * @param {ClippyReply['verdict']} verdict
+ */
+function changeLevel(context, verdict) {
+  const next = Math.min(Math.max(level + (verdict === 'good' ? 1 : verdict === 'bad' ? -1 : 0), 0), LEVELS.length - 1);
+  levelChange = next - level;
+  level = next;
+  context.globalState.update(LEVEL_KEY, level - INTERN);
+  updateLevelStatus();
+}
+
+/**
+ * Shows the current level in the status bar.
+ */
+function updateLevelStatus() {
+  const { name, emoji } = LEVELS[level];
+  levelStatus.text = `${emoji} ${name}`;
+  levelStatus.tooltip = `Clippy level ${level + 1} of ${LEVELS.length}. Good code levels you up; bad code levels you down.`;
+}
+
+/**
  * Draws the Clippy view from clippyState: Clippy bouncing in the right corner with his speech bubble,
  * and his recommendation, code and Implement button beside him.
  * @param {vscode.Uri} extensionUri
@@ -198,6 +261,20 @@ function renderClippyView(extensionUri) {
   const nonce = crypto.randomBytes(16).toString('base64');
   const imageUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'ClippyImage', image));
   const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  // Likewise celebrate (or mourn) a level change once. The ladder bar fills from where it was.
+  const levelMove = levelChange;
+  levelChange = 0;
+  const { name: levelName, emoji: levelEmoji } = LEVELS[level];
+  const ladderPercent = (index) => ((index / (LEVELS.length - 1)) * 100).toFixed(1);
+  const nextLevel = LEVELS[level + 1];
+  const levelHtml = `<header class="level${levelMove > 0 ? ' up' : levelMove < 0 ? ' down' : ''}">
+      <span class="level-emoji">${levelEmoji}</span>
+      <div class="level-text">
+        <div><span class="level-name">${escapeHtml(levelName)}</span> <span class="level-rank">Level ${level + 1}/${LEVELS.length}${nextLevel ? ` · next: ${escapeHtml(nextLevel.name)}` : ' · top of the ladder!'}</span></div>
+        <div class="ladder"><div class="ladder-fill" id="ladder-fill" style="width: ${ladderPercent(level - levelMove)}%" data-to="${ladderPercent(level)}"></div></div>
+      </div>
+    </header>`;
+  const toastHtml = levelMove ? `<div class="toast ${levelMove > 0 ? 'up' : 'down'}">${levelMove > 0 ? 'LEVEL UP! ⬆' : 'LEVEL DOWN ⬇'}</div>` : '';
   const lineLabel = line === endLine ? `line ${line}` : `lines ${line}-${endLine}`;
   const implementHtml = change !== 'none'
     ? `<div class="code-toolbar">
@@ -228,7 +305,46 @@ function renderClippyView(extensionUri) {
   <style>
     html, body { height: 100%; margin: 0; }
     body { display: flex; align-items: flex-end; gap: 16px; box-sizing: border-box; padding: 12px 16px; font-family: var(--vscode-font-family); }
-    main { flex: 1; min-width: 0; align-self: stretch; overflow-y: auto; }
+    main { flex: 1; min-width: 0; align-self: stretch; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+
+    /* The level badge: where the developer is on the ladder. */
+    .level { display: flex; align-items: center; gap: 10px; max-width: 720px; box-sizing: border-box; padding: 6px 12px; border-radius: 6px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
+    .level-emoji { display: inline-block; font-size: 1.8em; line-height: 1; }
+    .level-text { flex: 1; min-width: 0; }
+    .level-name { font-weight: 700; }
+    .level-rank { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+    .ladder { height: 6px; margin-top: 5px; border-radius: 3px; overflow: hidden; background: var(--vscode-input-background, rgba(128, 128, 128, 0.2)); }
+    .ladder-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #ff5f5f, #ffcc00 45%, #3ccf6e); transition: width 1.2s cubic-bezier(0.3, 1.4, 0.5, 1); }
+    .level.up { animation: level-up 1.4s ease-out; }
+    .level.up .level-emoji { animation: emoji-hop 0.5s ease-out 3; }
+    @keyframes emoji-hop {
+      0%, 100% { transform: translateY(0) rotate(0); }
+      50% { transform: translateY(-8px) rotate(-12deg) scale(1.2); }
+    }
+    .level.down { animation: level-down 0.7s ease-out; }
+    @keyframes level-up {
+      0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(60, 207, 110, 0.9); }
+      25% { transform: scale(1.04); box-shadow: 0 0 18px 4px rgba(60, 207, 110, 0.8); }
+      100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(60, 207, 110, 0); }
+    }
+    @keyframes level-down {
+      0%, 100% { transform: translateX(0); box-shadow: 0 0 0 0 rgba(255, 95, 95, 0); }
+      20% { transform: translateX(-8px); box-shadow: 0 0 14px 3px rgba(255, 95, 95, 0.8); }
+      40% { transform: translateX(8px); }
+      60% { transform: translateX(-5px); }
+      80% { transform: translateX(3px); }
+    }
+    /* "LEVEL UP!" / "LEVEL DOWN" floats up over Clippy's head and fades. */
+    .toast { position: absolute; top: 0; left: 50%; z-index: 2; font-size: 1.4em; font-weight: 900; white-space: nowrap; pointer-events: none; text-shadow: 0 2px 0 rgba(0, 0, 0, 0.5); animation: toast 2.4s ease-out forwards; }
+    .toast.up { color: #3ccf6e; }
+    .toast.down { color: #ff5f5f; }
+    @keyframes toast {
+      0% { opacity: 0; transform: translate(-50%, 30px) scale(0.4); }
+      15% { opacity: 1; transform: translate(-50%, 0) scale(1.25); }
+      25% { transform: translate(-50%, 0) scale(1); }
+      75% { opacity: 1; transform: translate(-50%, -30px); }
+      100% { opacity: 0; transform: translate(-50%, -50px); }
+    }
     .note { margin: 0; color: var(--vscode-descriptionForeground); }
     .recommendation { max-width: 720px; padding: 8px 12px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 4px; }
     .recommendation p { margin: 0; white-space: pre-wrap; }
@@ -320,15 +436,20 @@ function renderClippyView(extensionUri) {
   </style>
 </head>
 <body>
-  <main>${recommendationHtml}</main>
+  <main>${levelHtml}${recommendationHtml}</main>
   <div class="clippy" id="clippy">
+    ${toastHtml}
     ${message ? `<div class="bubble">${escapeHtml(message)}</div>` : ''}
-    <div class="body" id="body"><img class="${bounce}" src="${imageUri}" alt="Clippy"></div>
+    <div class="body" id="body"><img class="${bounce}" src="${imageUri}" alt="cClippy"></div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     document.getElementById('implement')?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
     document.getElementById('dismiss')?.addEventListener('click', () => vscode.postMessage({ type: 'dismiss' }));
+
+    // Fill the ladder from the old level to the new one.
+    const ladderFill = document.getElementById('ladder-fill');
+    requestAnimationFrame(() => requestAnimationFrame(() => { ladderFill.style.width = ladderFill.dataset.to + '%'; }));
 
     const clippy = document.getElementById('clippy');
     const body = document.getElementById('body');
@@ -526,6 +647,19 @@ function activate(context) {
     dark: { backgroundColor: 'rgba(255, 221, 0, 0.15)', borderColor: '#ffcc00' }
   });
 
+  level = Math.min(Math.max(INTERN + context.globalState.get(LEVEL_KEY, 0), 0), LEVELS.length - 1);
+  levelStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  levelStatus.command = 'clippy.view.focus';
+  updateLevelStatus();
+  levelStatus.show();
+  const resetLevelDisposable = vscode.commands.registerCommand('clippy.resetLevel', () => {
+    levelChange = INTERN - level;
+    level = INTERN;
+    context.globalState.update(LEVEL_KEY, 0);
+    updateLevelStatus();
+    renderClippyView(extensionUri);
+  });
+
   const viewDisposable = vscode.window.registerWebviewViewProvider('clippy.view', {
     resolveWebviewView(view) {
       clippyView = view;
@@ -568,6 +702,7 @@ function activate(context) {
       const fileText = document.getText();
       const reply = await askOllama(fileText, path.basename(document.fileName));
       if (request === latestRequest) {
+        changeLevel(context, reply.verdict);
         showClippy(extensionUri, reply, { uri: document.uri, fileText, languageId: document.languageId }, 'No code changes to suggest this time.');
       }
     } catch (err) {
@@ -615,7 +750,7 @@ function activate(context) {
   const visibleEditorsDisposable = vscode.window.onDidChangeVisibleTextEditors(() => renderSuggestion());
 
   context.subscriptions.push(
-    suggestionDecoration, codeLensesChanged, viewDisposable,
+    suggestionDecoration, codeLensesChanged, viewDisposable, levelStatus, resetLevelDisposable,
     willSaveDisposable, saveDisposable, codeLensDisposable, implementDisposable, dismissDisposable,
     visibleEditorsDisposable
   );

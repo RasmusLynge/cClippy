@@ -43,6 +43,13 @@ RECOMMENDATION RULES:
 - If "recommendation" is empty, "line" and "endLine" must be 0, "change" must be "none" and "codeExample" must be "".
 - Make one recommendation only, the most important one.
 
+VERDICT RULES:
+- "verdict" is your overall judgement of the code, and it moves the developer's level up or down.
+- "good": clean, correct code with nothing worth recommending. "recommendation" must be "".
+- "meh": works, but has a small improvement to make (naming, dead code, tidying).
+- "bad": a real bug, crash, security hole or risky pattern.
+- Be fair: don't call working code "bad" just to be sarcastic.
+
 OUTPUT FORMAT:
 Return ONLY valid JSON:
 
@@ -53,8 +60,11 @@ Return ONLY valid JSON:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "meh"
 }
+
+"verdict" must be exactly one of: "good", "meh", "bad"
 
 "image" must be exactly one of:
 "WaveClippy.png", "WinkClippy.png", "ThinkingClippy.png", "AfraidClippy.png", "RelaxClippy.png", "DefaultClippy.png"
@@ -68,7 +78,8 @@ Examples:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "good"
 }
 
 {
@@ -78,7 +89,8 @@ Examples:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "good"
 }
 
 {
@@ -88,7 +100,8 @@ Examples:
   "line": 7,
   "endLine": 7,
   "change": "replace",
-  "codeExample": "const activeUsers = users.filter((user) => user.isActive);"
+  "codeExample": "const activeUsers = users.filter((user) => user.isActive);",
+  "verdict": "meh"
 }
 
 {
@@ -98,7 +111,8 @@ Examples:
   "line": 14,
   "endLine": 14,
   "change": "replace",
-  "codeExample": "return db.query('SELECT * FROM users WHERE id = ?', [id]);"
+  "codeExample": "return db.query('SELECT * FROM users WHERE id = ?', [id]);",
+  "verdict": "bad"
 }
 
 {
@@ -108,7 +122,8 @@ Examples:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "good"
 }
 
 {
@@ -118,7 +133,8 @@ Examples:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "good"
 }
 
 {
@@ -128,7 +144,8 @@ Examples:
   "line": 21,
   "endLine": 21,
   "change": "replace",
-  "codeExample": "  if (items.length === 0) {\n    return null;\n  }\n  return items[0];"
+  "codeExample": "  if (items.length === 0) {\n    return null;\n  }\n  return items[0];",
+  "verdict": "bad"
 }
 
 {
@@ -138,7 +155,8 @@ Examples:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "good"
 }
 
 {
@@ -148,7 +166,8 @@ Examples:
   "line": 3,
   "endLine": 3,
   "change": "delete",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "meh"
 }
 
 {
@@ -158,7 +177,8 @@ Examples:
   "line": 0,
   "endLine": 0,
   "change": "none",
-  "codeExample": ""
+  "codeExample": "",
+  "verdict": "good"
 }
 
 FILE:
