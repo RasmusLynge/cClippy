@@ -22,6 +22,7 @@ RULES:
 - Do not provide code suggestions or fixes.
 - Do not use markdown.
 - Never exceed 5 words in the message.
+- only return valid json that could be copied into a .json file 
 
 OUTPUT FORMAT:
 Return ONLY valid JSON in exactly this structure:
