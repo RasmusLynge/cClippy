@@ -9,8 +9,8 @@ const CLIPPY_IMAGES = ['DefaultClippy.png', 'WaveClippy.png', 'WinkClippy.png', 
 let clippyPanel;
 
 /**
- * The code change the panel's Apply button would make, if any.
- * @type {{ uri: vscode.Uri, line: number, endLine: number, originalLines: string[], codeExample: string } | undefined}
+ * The code change the panel's Implement button would make, if any.
+ * @type {{ uri: vscode.Uri, line: number, endLine: number, originalLines: string[], change: 'replace' | 'delete', codeExample: string } | undefined}
  */
 let pendingSuggestion;
 
@@ -19,9 +19,10 @@ let pendingSuggestion;
  * @property {string} message Short speech-bubble text.
  * @property {string} image File name in ClippyImage/.
  * @property {string} recommendation Explanation of the suggested change; empty when there is none.
- * @property {number} line 1-based first file line that codeExample replaces; 0 when unknown or none.
- * @property {number} endLine 1-based last file line that codeExample replaces; 0 when unknown or none.
- * @property {string} codeExample Suggested code shown under the recommendation; empty when there is none.
+ * @property {number} line 1-based first file line the change affects; 0 when unknown or none.
+ * @property {number} endLine 1-based last file line the change affects; 0 when unknown or none.
+ * @property {'replace' | 'delete' | 'none'} change Replace lines line..endLine with codeExample, delete them, or nothing to implement.
+ * @property {string} codeExample Replacement code when change is 'replace'; empty otherwise.
  */
 
 /**
@@ -62,9 +63,10 @@ async function askOllama(fileText, fileName) {
           recommendation: { type: 'string' },
           line: { type: 'integer' },
           endLine: { type: 'integer' },
+          change: { type: 'string', enum: ['replace', 'delete', 'none'] },
           codeExample: { type: 'string' }
         },
-        required: ['message', 'image', 'recommendation', 'line', 'endLine', 'codeExample']
+        required: ['message', 'image', 'recommendation', 'line', 'endLine', 'change', 'codeExample']
       }
     })
   });
@@ -84,16 +86,29 @@ async function askOllama(fileText, fileName) {
     ? reply.endLine
     : line;
   // Keep only the code if the model wrapped it in markdown fences anyway.
-  let codeExample = recommendation
+  let codeExample = recommendation && reply.change !== 'delete'
     ? String(reply.codeExample ?? '').replace(/^\s*```[\w-]*\n?|\n?```\s*$/g, '').replace(/^\n+|\s+$/g, '')
     : '';
-  // Small models often drop the indentation; indent the suggestion to match the line it replaces.
+  // Only a change we know where to make, and (for a replace) what to write, can be implemented.
+  /** @type {ClippyReply['change']} */
+  let change = 'none';
+  if (recommendation && line) {
+    if (reply.change === 'delete') {
+      change = 'delete';
+    } else if (codeExample) {
+      change = 'replace';
+    }
+  }
+  // Small models often get the indentation wrong; re-indent the suggestion so its first line
+  // matches the line it replaces, keeping the relative indentation of the lines below it.
   if (codeExample && line) {
-    const originalIndent = fileText.split(/\r?\n/)[line - 1].match(/^\s*/)[0];
+    const originalIndent = fileText.split(/\r?\n/)[line - 1].match(/^[ \t]*/)[0];
     const codeIndent = codeExample.match(/^[ \t]*/)[0];
-    if (originalIndent.length > codeIndent.length && originalIndent.startsWith(codeIndent)) {
-      const extra = originalIndent.slice(codeIndent.length);
-      codeExample = codeExample.split('\n').map((text) => (text.trim() ? extra + text : text)).join('\n');
+    if (codeIndent !== originalIndent) {
+      codeExample = codeExample
+        .split('\n')
+        .map((text) => (text.startsWith(codeIndent) && text.trim() ? originalIndent + text.slice(codeIndent.length) : text))
+        .join('\n');
     }
   }
   // Clippy always opens with "Looks like"; add it if the model forgot.
@@ -103,24 +118,26 @@ async function askOllama(fileText, fileName) {
   } else {
     message = `Looks like ${message.charAt(0).toLowerCase()}${message.slice(1)}`;
   }
-  return { message, image, recommendation, line, endLine, codeExample };
+  return { message, image, recommendation, line, endLine, change, codeExample };
 }
 
 /**
  * Shows Clippy's message and image in a panel beside the editor, reusing it between saves.
  * @param {vscode.ExtensionContext} context
  * @param {Pick<ClippyReply, 'message' | 'image'> & Partial<ClippyReply>} reply
- * @param {{ uri: vscode.Uri, fileText: string }} [source] The file and text Clippy reviewed; enables the Apply button.
+ * @param {{ uri: vscode.Uri, fileText: string }} [source] The file and text Clippy reviewed; enables the Implement button.
+ * @param {{ bounce?: boolean }} [options] Whether Clippy bounces around the panel before settling in the corner.
  */
-function showClippy(context, { message, image, recommendation = '', line = 0, endLine = 0, codeExample = '' }, source) {
+function showClippy(context, { message, image, recommendation = '', line = 0, endLine = 0, change = 'none', codeExample = '' }, source, { bounce = true } = {}) {
   const imageDir = vscode.Uri.joinPath(context.extensionUri, 'ClippyImage');
 
-  pendingSuggestion = source && recommendation && codeExample && line
+  pendingSuggestion = source && change !== 'none'
     ? {
       uri: source.uri,
       line,
       endLine,
       originalLines: source.fileText.split(/\r?\n/).slice(line - 1, endLine),
+      change,
       codeExample
     }
     : undefined;
@@ -136,8 +153,8 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
     );
     clippyPanel.onDidDispose(() => { clippyPanel = undefined; });
     clippyPanel.webview.onDidReceiveMessage(async (msg) => {
-      if (msg.type === 'apply' && await applySuggestion()) {
-        clippyPanel?.webview.postMessage({ type: 'applied' });
+      if (msg.type === 'implement' && await implementSuggestion()) {
+        clippyPanel?.webview.postMessage({ type: 'implemented' });
       }
     });
   }
@@ -146,12 +163,15 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
   const nonce = crypto.randomBytes(16).toString('base64');
   const imageUri = webview.asWebviewUri(vscode.Uri.joinPath(imageDir, image));
   const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-  // Render the code like the editor: a line-number gutter (starting at `line`) beside each row.
-  const applyHtml = pendingSuggestion
-    ? `<div class="code-toolbar"><button id="apply" title="Replace line${line === endLine ? ` ${line}` : `s ${line}-${endLine}`} with this code">Apply</button></div>`
+  const lineLabel = line === endLine ? `line ${line}` : `lines ${line}-${endLine}`;
+  const implementHtml = pendingSuggestion
+    ? `<div class="code-toolbar"><button id="implement" title="${change === 'delete' ? 'Delete' : 'Replace'} ${lineLabel}">Implement</button></div>`
     : '';
-  const codeHtml = codeExample
-    ? `${applyHtml}<pre class="code">${codeExample.split('\n').map((text, i) =>
+  // Render code like the editor: a line-number gutter (starting at `line`) beside each row.
+  // A delete shows the lines that will be removed, struck through.
+  const shownLines = change === 'delete' && pendingSuggestion ? pendingSuggestion.originalLines : codeExample ? codeExample.split('\n') : [];
+  const codeHtml = shownLines.length
+    ? `${implementHtml}<pre class="code${change === 'delete' ? ' removed' : ''}">${shownLines.map((text, i) =>
       `<span class="code-line"><span class="line-number">${line ? line + i : ''}</span><span class="line-text">${escapeHtml(text) || ' '}</span></span>`
     ).join('')}</pre>`
     : '';
@@ -168,9 +188,13 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
-    body { display: flex; flex-direction: column; align-items: center; padding: 16px; font-family: var(--vscode-font-family); }
-    .bubble { background: #ffffcc; color: #000; border: 1px solid #000; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 1.1em; }
-    img { max-width: 180px; }
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: 16px; overflow-x: hidden; font-family: var(--vscode-font-family); }
+    /* Clippy floats over the panel instead of sitting in the layout; clicks pass through to the code below. */
+    #clippy { position: fixed; top: 0; left: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; max-width: 220px; pointer-events: none; will-change: transform; }
+    #clippy.settling { transition: transform 0.8s ease-out; }
+    .bubble { background: #ffffcc; color: #000; border: 1px solid #000; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 1.1em; }
+    #clippy img { width: 140px; }
     .recommendation { margin-top: 12px; width: 100%; max-width: 480px; box-sizing: border-box; padding: 8px 12px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 4px; }
     .recommendation p { margin: 0; white-space: pre-wrap; }
     .code-toolbar { display: flex; justify-content: flex-end; margin-top: 8px; }
@@ -181,40 +205,103 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
     .code-line { display: flex; }
     .line-number { flex: none; min-width: 3ch; padding: 0 12px 0 8px; text-align: right; color: var(--vscode-editorLineNumber-foreground); user-select: none; }
     .line-text { white-space: pre; padding-right: 12px; }
+    .removed .code-line { background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.15)); }
+    .removed .line-text { text-decoration: line-through; }
   </style>
 </head>
 <body>
-  <div class="bubble">${escapeHtml(message)}</div>
-  <img src="${imageUri}" alt="Clippy">
   ${recommendationHtml}
+  <div id="clippy">
+    <div class="bubble">${escapeHtml(message)}</div>
+    <img src="${imageUri}" alt="Clippy">
+  </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const applyButton = document.getElementById('apply');
-    applyButton?.addEventListener('click', () => vscode.postMessage({ type: 'apply' }));
+    const implementButton = document.getElementById('implement');
+    implementButton?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
     window.addEventListener('message', (event) => {
-      if (event.data.type === 'applied' && applyButton) {
-        applyButton.textContent = 'Applied';
-        applyButton.disabled = true;
+      if (event.data.type === 'implemented' && implementButton) {
+        implementButton.textContent = 'Implemented';
+        implementButton.disabled = true;
       }
     });
+
+    // Clippy bounces off the panel edges for a few seconds, then settles in the bottom-right corner.
+    const clippy = document.getElementById('clippy');
+    const BOUNCE_MS = 5000;
+    const SPEED = 350; // px per second
+    let bouncing = false;
+    const maxX = () => Math.max(0, window.innerWidth - clippy.offsetWidth);
+    const maxY = () => Math.max(0, window.innerHeight - clippy.offsetHeight);
+    const place = (x, y) => { clippy.style.transform = 'translate(' + x + 'px, ' + y + 'px)'; };
+    const rest = () => {
+      // Leave room below the content so resting Clippy never covers the end of it.
+      document.body.style.paddingBottom = clippy.offsetHeight + 'px';
+      place(maxX(), maxY());
+    };
+
+    function bounceAround() {
+      bouncing = true;
+      let x = maxX();
+      let y = maxY();
+      // Head up and away from the corner at a random angle that isn't too flat or too steep.
+      const angle = Math.PI * (1.1 + Math.random() * 0.3);
+      let vx = Math.cos(angle) * SPEED;
+      let vy = Math.sin(angle) * SPEED;
+      const start = performance.now();
+      let last = start;
+      function step(now) {
+        const dt = (now - last) / 1000;
+        last = now;
+        x += vx * dt;
+        y += vy * dt;
+        if (x < 0 || x > maxX()) { vx = -vx; x = Math.min(Math.max(x, 0), maxX()); }
+        if (y < 0 || y > maxY()) { vy = -vy; y = Math.min(Math.max(y, 0), maxY()); }
+        place(x, y);
+        if (now - start < BOUNCE_MS) {
+          requestAnimationFrame(step);
+        } else {
+          bouncing = false;
+          clippy.classList.add('settling');
+          rest();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function start() {
+      rest();
+      if (${bounce} && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        bounceAround();
+      }
+    }
+    window.addEventListener('resize', () => { if (!bouncing) { rest(); } });
+    // Clippy's size (and so where the edges are) is only known once the image has loaded.
+    const clippyImage = clippy.querySelector('img');
+    if (clippyImage.complete) {
+      start();
+    } else {
+      clippyImage.addEventListener('load', start, { once: true });
+      clippyImage.addEventListener('error', start, { once: true });
+    }
   </script>
 </body>
 </html>`;
 }
 
 /**
- * Replaces the lines Clippy reviewed with its suggested code, like Copilot's Apply.
+ * Makes Clippy's suggested change in the file: replaces the lines it reviewed with its code, or deletes them.
  * Refuses if those lines changed since the save, so it never overwrites the wrong code.
- * @returns {Promise<boolean>} Whether the edit was applied.
+ * @returns {Promise<boolean>} Whether the change was made.
  */
-async function applySuggestion() {
+async function implementSuggestion() {
   const suggestion = pendingSuggestion;
   if (!suggestion) {
     return false;
   }
 
   const document = await vscode.workspace.openTextDocument(suggestion.uri);
-  const { line, endLine, originalLines, codeExample } = suggestion;
+  const { line, endLine, originalLines, change, codeExample } = suggestion;
   const currentLines = endLine <= document.lineCount
     ? Array.from({ length: endLine - line + 1 }, (_, i) => document.lineAt(line - 1 + i).text)
     : [];
@@ -223,21 +310,39 @@ async function applySuggestion() {
     return false;
   }
 
-  const range = new vscode.Range(line - 1, 0, endLine - 1, document.lineAt(endLine - 1).text.length);
+  const lastLineEnd = document.lineAt(endLine - 1).text.length;
+  let range;
+  if (change === 'replace') {
+    range = new vscode.Range(line - 1, 0, endLine - 1, lastLineEnd);
+  } else if (endLine < document.lineCount) {
+    // Delete the whole lines, including the line break after them.
+    range = new vscode.Range(line - 1, 0, endLine, 0);
+  } else if (line > 1) {
+    // Deleting the last lines: take the line break before them instead.
+    range = new vscode.Range(line - 2, document.lineAt(line - 2).text.length, endLine - 1, lastLineEnd);
+  } else {
+    range = new vscode.Range(0, 0, endLine - 1, lastLineEnd);
+  }
+
   const edit = new vscode.WorkspaceEdit();
-  edit.replace(suggestion.uri, range, codeExample);
+  edit.replace(suggestion.uri, range, change === 'replace' ? codeExample : '');
   if (!await vscode.workspace.applyEdit(edit)) {
-    vscode.window.showErrorMessage('Clippy: could not apply the suggestion.');
+    vscode.window.showErrorMessage('Clippy: could not implement the suggestion.');
     return false;
   }
   pendingSuggestion = undefined;
 
-  // Show the file with the new code selected, in the editor it was already open in.
-  const codeLines = codeExample.split('\n');
-  const newEnd = new vscode.Position(line - 2 + codeLines.length, codeLines[codeLines.length - 1].length);
+  // Show the file in the editor it was already open in, with the new code selected (or the cursor where the deleted lines were).
   const existingEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === suggestion.uri.toString());
   const editor = await vscode.window.showTextDocument(document, { viewColumn: existingEditor?.viewColumn ?? vscode.ViewColumn.One });
-  editor.selection = new vscode.Selection(range.start, newEnd);
+  if (change === 'replace') {
+    const codeLines = codeExample.split('\n');
+    const newEnd = new vscode.Position(line - 2 + codeLines.length, codeLines[codeLines.length - 1].length);
+    editor.selection = new vscode.Selection(range.start, newEnd);
+  } else {
+    const cursor = document.validatePosition(new vscode.Position(line - 1, 0));
+    editor.selection = new vscode.Selection(cursor, cursor);
+  }
   editor.revealRange(editor.selection);
   return true;
 }
@@ -267,7 +372,7 @@ function activate(context) {
     }
 
     const request = ++latestRequest;
-    showClippy(context, { message: 'Let me take a look…', image: 'DefaultClippy.png' });
+    showClippy(context, { message: 'Let me take a look…', image: 'DefaultClippy.png' }, undefined, { bounce: false });
 
     try {
       const fileText = document.getText();
