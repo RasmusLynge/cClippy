@@ -30,11 +30,11 @@ RECOMMENDATION RULES:
 - If the code is fine, "recommendation" must be an empty string "".
 - Keep it to 1-3 short sentences. A little sarcasm is fine, but the advice itself must be correct and useful.
 - Name the specific line, function, or variable you mean.
-- Always set "line" to the line number where "codeExample" starts, i.e. the first line of the original code it replaces. The code below is prefixed with line numbers ("12 | ..."); use those numbers, never guess.
+- Always set "line" to the first line and "endLine" to the last line of the original code that "codeExample" replaces. For a single line, both are the same number. The code below is prefixed with line numbers ("12 | ..."); use those numbers, never guess.
 - Do not mention line numbers in the recommendation text; they are shown next to the code example.
-- If "recommendation" is empty, "line" must be 0.
+- If "recommendation" is empty, "line" and "endLine" must be 0.
 - Write "recommendation" as plain text only: explain what to change and why. Do not put code in it.
-- Put the suggested code in "codeExample": the corrected version of the line(s) you are talking about, ready to copy. Keep the original indentation and use \n for new lines.
+- Put the suggested code in "codeExample". It will replace lines "line" to "endLine" in the file exactly as written when the user clicks Apply, so it must be the complete, working replacement for those lines: keep the original indentation, do not leave out code from those lines, and use \n for new lines.
 - "codeExample" should be short (1-8 lines) and must not use markdown code fences or the "12 | " line number prefixes.
 - If "recommendation" is empty, "codeExample" must be an empty string "".
 - Make one recommendation only, the most important one.
@@ -47,6 +47,7 @@ Return ONLY valid JSON:
   "image": "WinkClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
@@ -60,6 +61,7 @@ Examples:
   "image": "WaveClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
@@ -68,6 +70,7 @@ Examples:
   "image": "WinkClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
@@ -76,6 +79,7 @@ Examples:
   "image": "ThinkingClippy.png",
   "recommendation": "Bold of you to name it data2. Something like activeUsers would tell future-you what it holds.",
   "line": 7,
+  "endLine": 7,
   "codeExample": "const activeUsers = users.filter((user) => user.isActive);"
 }
 
@@ -84,6 +88,7 @@ Examples:
   "image": "AfraidClippy.png",
   "recommendation": "Building SQL with string concatenation in getUser()? Classic. A parameterized query keeps SQL injection out.",
   "line": 14,
+  "endLine": 14,
   "codeExample": "return db.query('SELECT * FROM users WHERE id = ?', [id]);"
 }
 
@@ -92,6 +97,7 @@ Examples:
   "image": "RelaxClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
@@ -100,6 +106,7 @@ Examples:
   "image": "WinkClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
@@ -108,7 +115,8 @@ Examples:
   "image": "AfraidClippy.png",
   "recommendation": "items[0] will happily explode on an empty array. Check items.length first.",
   "line": 21,
-  "codeExample": "if (items.length === 0) {\n  return null;\n}\nreturn items[0];"
+  "endLine": 21,
+  "codeExample": "  if (items.length === 0) {\n    return null;\n  }\n  return items[0];"
 }
 
 {
@@ -116,6 +124,7 @@ Examples:
   "image": "RelaxClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
@@ -124,6 +133,7 @@ Examples:
   "image": "DefaultClippy.png",
   "recommendation": "",
   "line": 0,
+  "endLine": 0,
   "codeExample": ""
 }
 
