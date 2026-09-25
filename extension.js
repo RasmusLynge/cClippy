@@ -5,12 +5,44 @@ const crypto = require('crypto');
 
 const CLIPPY_IMAGES = ['DefaultClippy.png', 'WaveClippy.png', 'WinkClippy.png', 'ThinkingClippy.png', 'AfraidClippy.png', 'RelaxClippy.png'];
 
-/** @type {vscode.WebviewPanel | undefined} */
-let clippyPanel;
+/** Which bounce (a CSS animation in the Clippy view) each pose gets. */
+const IMAGE_BOUNCES = {
+  'DefaultClippy.png': 'hop',
+  'ThinkingClippy.png': 'float',
+  'WaveClippy.png': 'wiggle',
+  'AfraidClippy.png': 'shake',
+  'RelaxClippy.png': 'sway',
+  'WinkClippy.png': 'tilt'
+};
+
+/** Highlights the lines Clippy's suggestion is about. @type {vscode.TextEditorDecorationType} */
+let suggestionDecoration;
+const codeLensesChanged = new vscode.EventEmitter();
+
+/** The Clippy tab in the bottom panel, once VS Code has opened it. @type {vscode.WebviewView | undefined} */
+let clippyView;
 
 /**
- * The code change the panel's Implement button would make, if any.
- * @type {{ uri: vscode.Uri, line: number, endLine: number, originalLines: string[], change: 'replace' | 'delete', codeExample: string } | undefined}
+ * What the Clippy view shows. `note` stands in for the recommendation when there is none;
+ * `entrance` is how Clippy shows up the next time the view is drawn.
+ * @type {Pick<ClippyReply, 'message' | 'image' | 'recommendation' | 'line' | 'endLine' | 'change' | 'codeExample'> & { originalLines: string[], note: string, entrance: 'roam' | 'celebrate' | 'none' }}
+ */
+let clippyState = {
+  message: '',
+  image: 'RelaxClippy.png',
+  recommendation: '',
+  line: 0,
+  endLine: 0,
+  change: 'none',
+  codeExample: '',
+  originalLines: [],
+  note: 'Save a file (Ctrl+S) and Clippy will take a look.',
+  entrance: 'none'
+};
+
+/**
+ * The code change Clippy suggests, if any; implemented from the Clippy view, its CodeLens or hover.
+ * @type {{ uri: vscode.Uri, languageId: string, line: number, endLine: number, originalLines: string[], change: 'replace' | 'delete', codeExample: string, recommendation: string } | undefined}
  */
 let pendingSuggestion;
 
@@ -122,54 +154,60 @@ async function askOllama(fileText, fileName) {
 }
 
 /**
- * Shows Clippy's message and image in a panel beside the editor, reusing it between saves.
- * @param {vscode.ExtensionContext} context
- * @param {Pick<ClippyReply, 'message' | 'image'> & Partial<ClippyReply>} reply
- * @param {{ uri: vscode.Uri, fileText: string }} [source] The file and text Clippy reviewed; enables the Implement button.
- * @param {{ bounce?: boolean }} [options] Whether Clippy bounces around the panel before settling in the corner.
+ * Highlights the lines of the pending suggestion, with the recommendation in a hover, and refreshes its CodeLens.
  */
-function showClippy(context, { message, image, recommendation = '', line = 0, endLine = 0, change = 'none', codeExample = '' }, source, { bounce = true } = {}) {
-  const imageDir = vscode.Uri.joinPath(context.extensionUri, 'ClippyImage');
-
-  pendingSuggestion = source && change !== 'none'
-    ? {
-      uri: source.uri,
-      line,
-      endLine,
-      originalLines: source.fileText.split(/\r?\n/).slice(line - 1, endLine),
-      change,
-      codeExample
+function renderSuggestion() {
+  const suggestion = pendingSuggestion;
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (!suggestion || editor.document.uri.toString() !== suggestion.uri.toString()) {
+      editor.setDecorations(suggestionDecoration, []);
+      continue;
     }
-    : undefined;
-
-  if (clippyPanel) {
-    clippyPanel.reveal(undefined, true);
-  } else {
-    clippyPanel = vscode.window.createWebviewPanel(
-      'clippy',
-      'Clippy',
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-      { localResourceRoots: [imageDir], enableScripts: true }
-    );
-    clippyPanel.onDidDispose(() => { clippyPanel = undefined; });
-    clippyPanel.webview.onDidReceiveMessage(async (msg) => {
-      if (msg.type === 'implement' && await implementSuggestion()) {
-        clippyPanel?.webview.postMessage({ type: 'implemented' });
-      }
-    });
+    const hover = new vscode.MarkdownString();
+    hover.isTrusted = { enabledCommands: ['clippy.implement', 'clippy.dismiss'] };
+    hover.appendMarkdown('**Clippy:** ');
+    hover.appendText(suggestion.recommendation);
+    if (suggestion.change === 'replace') {
+      hover.appendCodeblock(suggestion.codeExample, suggestion.languageId);
+    } else {
+      hover.appendMarkdown('\n\nClippy wants these lines deleted.');
+    }
+    hover.appendMarkdown('\n\n[Implement](command:clippy.implement) · [Dismiss](command:clippy.dismiss)');
+    editor.setDecorations(suggestionDecoration, [{
+      range: new vscode.Range(suggestion.line - 1, 0, suggestion.endLine - 1, Number.MAX_SAFE_INTEGER),
+      hoverMessage: hover
+    }]);
   }
+  codeLensesChanged.fire();
+}
 
-  const webview = clippyPanel.webview;
+/**
+ * Draws the Clippy view from clippyState: Clippy bouncing in the right corner with his speech bubble,
+ * and his recommendation, code and Implement button beside him.
+ * @param {vscode.Uri} extensionUri
+ */
+function renderClippyView(extensionUri) {
+  if (!clippyView) {
+    return;
+  }
+  const { message, image, recommendation, line, endLine, change, codeExample, originalLines, note, entrance } = clippyState;
+  // Play the entrance once; if VS Code re-creates the view later, Clippy just carries on bouncing.
+  clippyState.entrance = 'none';
+  const bounce = IMAGE_BOUNCES[image] ?? 'hop';
+  const webview = clippyView.webview;
   const nonce = crypto.randomBytes(16).toString('base64');
-  const imageUri = webview.asWebviewUri(vscode.Uri.joinPath(imageDir, image));
+  const imageUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'ClippyImage', image));
   const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   const lineLabel = line === endLine ? `line ${line}` : `lines ${line}-${endLine}`;
-  const implementHtml = pendingSuggestion
-    ? `<div class="code-toolbar"><button id="implement" title="${change === 'delete' ? 'Delete' : 'Replace'} ${lineLabel}">Implement</button></div>`
+  const implementHtml = change !== 'none'
+    ? `<div class="code-toolbar">
+        <button id="dismiss" class="secondary">Dismiss</button>
+        <button id="implement" title="${change === 'delete' ? 'Delete' : 'Replace'} ${lineLabel}">Implement</button>
+      </div>`
     : '';
   // Render code like the editor: a line-number gutter (starting at `line`) beside each row.
   // A delete shows the lines that will be removed, struck through.
-  const shownLines = change === 'delete' && pendingSuggestion ? pendingSuggestion.originalLines : codeExample ? codeExample.split('\n') : [];
+  const shownLines = change === 'delete' ? originalLines : codeExample ? codeExample.split('\n') : [];
   const codeHtml = shownLines.length
     ? `${implementHtml}<pre class="code${change === 'delete' ? ' removed' : ''}">${shownLines.map((text, i) =>
       `<span class="code-line"><span class="line-number">${line ? line + i : ''}</span><span class="line-text">${escapeHtml(text) || ' '}</span></span>`
@@ -177,10 +215,10 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
     : '';
   const recommendationHtml = recommendation
     ? `<div class="recommendation">
-    <p>${escapeHtml(recommendation)}</p>
-    ${codeHtml}
-  </div>`
-    : '';
+      <p>${escapeHtml(recommendation)}</p>
+      ${codeHtml}
+    </div>`
+    : `<p class="note">${escapeHtml(note)}</p>`;
 
   webview.html = `<!DOCTYPE html>
 <html>
@@ -189,65 +227,133 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
     html, body { height: 100%; margin: 0; }
-    body { display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: 16px; overflow-x: hidden; font-family: var(--vscode-font-family); }
-    /* Clippy floats over the panel instead of sitting in the layout; clicks pass through to the code below. */
-    #clippy { position: fixed; top: 0; left: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; max-width: 220px; pointer-events: none; will-change: transform; }
-    #clippy.settling { transition: transform 0.8s ease-out; }
-    .bubble { background: #ffffcc; color: #000; border: 1px solid #000; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 1.1em; }
-    #clippy img { width: 140px; }
-    .recommendation { margin-top: 12px; width: 100%; max-width: 480px; box-sizing: border-box; padding: 8px 12px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 4px; }
+    body { display: flex; align-items: flex-end; gap: 16px; box-sizing: border-box; padding: 12px 16px; font-family: var(--vscode-font-family); }
+    main { flex: 1; min-width: 0; align-self: stretch; overflow-y: auto; }
+    .note { margin: 0; color: var(--vscode-descriptionForeground); }
+    .recommendation { max-width: 720px; padding: 8px 12px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 4px; }
     .recommendation p { margin: 0; white-space: pre-wrap; }
-    .code-toolbar { display: flex; justify-content: flex-end; margin-top: 8px; }
+    .code-toolbar { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
     .code-toolbar button { padding: 2px 10px; font-family: inherit; color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: none; border-radius: 2px; cursor: pointer; }
-    .code-toolbar button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-    .code-toolbar button:disabled { opacity: 0.6; cursor: default; }
+    .code-toolbar button:hover { background: var(--vscode-button-hoverBackground); }
+    .code-toolbar button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
+    .code-toolbar button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .code { margin: 4px 0 0; padding: 6px 0; overflow-x: auto; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 4px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); line-height: 1.5; }
     .code-line { display: flex; }
     .line-number { flex: none; min-width: 3ch; padding: 0 12px 0 8px; text-align: right; color: var(--vscode-editorLineNumber-foreground); user-select: none; }
     .line-text { white-space: pre; padding-right: 12px; }
     .removed .code-line { background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.15)); }
     .removed .line-text { text-decoration: line-through; }
+
+    /* Clippy sits in the bottom-right corner with his speech bubble to his left.
+       Three layers animate independently: .clippy roams the tab, .body does tricks, and the img does his pose's bounce. */
+    .clippy { flex: none; position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 8px; padding-top: 50px; }
+    .clippy.settling { transition: transform 0.7s cubic-bezier(0.3, 1.6, 0.5, 1); }
+    .bubble { max-width: 240px; margin-top: 8px; padding: 6px 10px; background: #ffffcc; color: #000; border: 1px solid #000; border-radius: 8px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3); line-height: 1.4; transform-origin: 100% 50%; animation: pop 0.45s cubic-bezier(0.3, 1.8, 0.5, 1); }
+    .body { transform-origin: 50% 60%; }
+    .body.settling { transition: transform 0.5s ease-out; }
+    .body.flip { animation: flip 0.9s ease-in-out; }
+    .body.spin { animation: spin 0.8s cubic-bezier(0.5, 0, 0.3, 1.3); }
+    .body.jump { animation: jump 0.8s; }
+    .clippy img { display: block; height: 110px; transform-origin: 50% 100%; }
+
+    @keyframes pop {
+      from { transform: scale(0); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+    @keyframes flip {
+      0% { transform: translateY(0) rotate(0); }
+      15% { transform: translateY(8px) scale(1.2, 0.8); }
+      50% { transform: translateY(-70px) rotate(180deg); }
+      85% { transform: translateY(0) rotate(360deg) scale(1.2, 0.8); }
+      100% { transform: translateY(0) rotate(360deg); }
+    }
+    @keyframes spin {
+      from { transform: rotate(0); }
+      to { transform: rotate(-360deg); }
+    }
+    @keyframes jump {
+      0%, 100% { transform: translateY(0) scale(1, 1); animation-timing-function: ease-out; }
+      15% { transform: translateY(6px) scale(1.25, 0.75); animation-timing-function: ease-out; }
+      50% { transform: translateY(-90px) scale(0.85, 1.2); animation-timing-function: ease-in; }
+      85% { transform: translateY(4px) scale(1.25, 0.75); animation-timing-function: ease-out; }
+    }
+
+    /* One bounce per pose. */
+    @keyframes hop {
+      0%, 100% { transform: translateY(0) scale(1.2, 0.8); animation-timing-function: ease-out; }
+      10% { transform: translateY(-5px) scale(0.95, 1.08); animation-timing-function: ease-out; }
+      50% { transform: translateY(-45px) scale(0.92, 1.12); animation-timing-function: ease-in; }
+      90% { transform: translateY(-5px) scale(0.95, 1.08); animation-timing-function: ease-in; }
+    }
+    @keyframes float {
+      from { transform: translateY(0) rotate(-8deg); }
+      to { transform: translateY(-20px) rotate(8deg); }
+    }
+    @keyframes wiggle {
+      0%, 100% { transform: translateY(0) rotate(0) scale(1.1, 0.9); }
+      25% { transform: translateY(-16px) rotate(15deg); }
+      50% { transform: translateY(-22px) rotate(0); }
+      75% { transform: translateY(-16px) rotate(-15deg); }
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0) rotate(0); }
+      25% { transform: translateX(6px) rotate(3deg); }
+      75% { transform: translateX(-6px) rotate(-3deg); }
+    }
+    @keyframes sway {
+      0% { transform: rotate(-12deg); }
+      50% { transform: translateY(-14px) rotate(0); }
+      100% { transform: rotate(12deg); }
+    }
+    @keyframes tilt {
+      0%, 40%, 100% { transform: translateY(0) rotate(0) scale(1, 1); animation-timing-function: ease-out; }
+      5%, 35% { transform: translateY(0) scale(1.15, 0.85); animation-timing-function: ease-out; }
+      20% { transform: translateY(-40px) rotate(-20deg); animation-timing-function: ease-in; }
+    }
+    /* Always animated, even when the OS asks for reduced motion: bouncing is the whole point of Clippy. */
+    .clippy img.hop { animation: hop 0.8s infinite; }
+    .clippy img.float { animation: float 1.2s ease-in-out infinite alternate; }
+    .clippy img.wiggle { animation: wiggle 0.5s linear infinite; }
+    .clippy img.shake { animation: shake 0.2s linear infinite; }
+    .clippy img.sway { animation: sway 1.5s ease-in-out infinite alternate; }
+    .clippy img.tilt { animation: tilt 1.4s infinite; }
   </style>
 </head>
 <body>
-  ${recommendationHtml}
-  <div id="clippy">
-    <div class="bubble">${escapeHtml(message)}</div>
-    <img src="${imageUri}" alt="Clippy">
+  <main>${recommendationHtml}</main>
+  <div class="clippy" id="clippy">
+    ${message ? `<div class="bubble">${escapeHtml(message)}</div>` : ''}
+    <div class="body" id="body"><img class="${bounce}" src="${imageUri}" alt="Clippy"></div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const implementButton = document.getElementById('implement');
-    implementButton?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
-    window.addEventListener('message', (event) => {
-      if (event.data.type === 'implemented' && implementButton) {
-        implementButton.textContent = 'Implemented';
-        implementButton.disabled = true;
-      }
-    });
+    document.getElementById('implement')?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
+    document.getElementById('dismiss')?.addEventListener('click', () => vscode.postMessage({ type: 'dismiss' }));
 
-    // Clippy bounces off the panel edges for a few seconds, then settles in the bottom-right corner.
     const clippy = document.getElementById('clippy');
-    const BOUNCE_MS = 5000;
-    const SPEED = 350; // px per second
-    let bouncing = false;
-    const maxX = () => Math.max(0, window.innerWidth - clippy.offsetWidth);
-    const maxY = () => Math.max(0, window.innerHeight - clippy.offsetHeight);
-    const place = (x, y) => { clippy.style.transform = 'translate(' + x + 'px, ' + y + 'px)'; };
-    const rest = () => {
-      // Leave room below the content so resting Clippy never covers the end of it.
-      document.body.style.paddingBottom = clippy.offsetHeight + 'px';
-      place(maxX(), maxY());
-    };
+    const body = document.getElementById('body');
+    let roaming = false;
 
-    function bounceAround() {
-      bouncing = true;
-      let x = maxX();
-      let y = maxY();
-      // Head up and away from the corner at a random angle that isn't too flat or too steep.
+    /** Plays one of the .body trick animations. */
+    function trick(name) {
+      body.classList.remove('flip', 'spin', 'jump');
+      void body.offsetWidth; // Restart the animation if the same trick plays twice in a row.
+      body.classList.add(name);
+      body.addEventListener('animationend', () => body.classList.remove(name), { once: true });
+    }
+
+    /** Bounces Clippy all around the tab, tumbling and squashing off the walls, then springs him back to his corner. */
+    function roam() {
+      roaming = true;
+      const home = clippy.getBoundingClientRect();
+      // How far he can move from his corner in each direction before hitting a wall.
+      const minX = -home.left, maxX = window.innerWidth - home.right;
+      const minY = -home.top, maxY = window.innerHeight - home.bottom;
+      let x = 0, y = 0;
+      const speed = 420 + Math.random() * 180;
       const angle = Math.PI * (1.1 + Math.random() * 0.3);
-      let vx = Math.cos(angle) * SPEED;
-      let vy = Math.sin(angle) * SPEED;
+      let vx = Math.cos(angle) * speed, vy = Math.sin(angle) * speed;
+      let spin = vx < 0 ? -360 : 360, rotation = 0, squash = 1;
       const start = performance.now();
       let last = start;
       function step(now) {
@@ -255,38 +361,93 @@ function showClippy(context, { message, image, recommendation = '', line = 0, en
         last = now;
         x += vx * dt;
         y += vy * dt;
-        if (x < 0 || x > maxX()) { vx = -vx; x = Math.min(Math.max(x, 0), maxX()); }
-        if (y < 0 || y > maxY()) { vy = -vy; y = Math.min(Math.max(y, 0), maxY()); }
-        place(x, y);
-        if (now - start < BOUNCE_MS) {
+        if (x < minX || x > maxX) { vx = -vx; spin = -spin; squash = 0.6; x = Math.min(Math.max(x, minX), maxX); }
+        if (y < minY || y > maxY) { vy = -vy; squash = 0.6; y = Math.min(Math.max(y, minY), maxY); }
+        rotation += spin * dt;
+        squash += (1 - squash) * Math.min(1, dt * 10);
+        clippy.style.transform = 'translate(' + x + 'px, ' + y + 'px)';
+        body.style.transform = 'rotate(' + rotation + 'deg) scale(' + (2 - squash) + ', ' + squash + ')';
+        if (now - start < 4000) {
           requestAnimationFrame(step);
-        } else {
-          bouncing = false;
-          clippy.classList.add('settling');
-          rest();
+          return;
         }
+        // Spring home, landing upright.
+        clippy.classList.add('settling');
+        body.classList.add('settling');
+        clippy.style.transform = '';
+        body.style.transform = 'rotate(' + Math.round(rotation / 360) * 360 + 'deg)';
+        setTimeout(() => {
+          clippy.classList.remove('settling');
+          body.classList.remove('settling');
+          body.style.transform = '';
+          roaming = false;
+          trick('jump');
+        }, 700);
       }
       requestAnimationFrame(step);
     }
 
-    function start() {
-      rest();
-      if (${bounce} && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        bounceAround();
-      }
+    const entrance = '${entrance}';
+    if (entrance === 'roam') {
+      roam();
+    } else if (entrance === 'celebrate') {
+      trick('flip');
     }
-    window.addEventListener('resize', () => { if (!bouncing) { rest(); } });
-    // Clippy's size (and so where the edges are) is only known once the image has loaded.
-    const clippyImage = clippy.querySelector('img');
-    if (clippyImage.complete) {
-      start();
-    } else {
-      clippyImage.addEventListener('load', start, { once: true });
-      clippyImage.addEventListener('error', start, { once: true });
+    // Now and then he shows off, unless he's busy thinking or scared.
+    if ('${bounce}' !== 'float' && '${bounce}' !== 'shake') {
+      (function showOff() {
+        setTimeout(() => {
+          if (!roaming) {
+            trick(['flip', 'spin', 'jump'][Math.floor(Math.random() * 3)]);
+          }
+          showOff();
+        }, 4000 + Math.random() * 5000);
+      })();
     }
   </script>
 </body>
 </html>`;
+}
+
+/**
+ * Opens the Clippy tab in the bottom panel without taking focus from the editor.
+ */
+async function revealClippyView() {
+  if (clippyView) {
+    clippyView.show(true);
+    return;
+  }
+  // VS Code only creates the view once it's first opened, and opening it that way focuses it, so hand focus back.
+  await vscode.commands.executeCommand('clippy.view.focus');
+  await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+}
+
+/**
+ * Changes what Clippy says and shows, and his suggestion if he has one.
+ * @param {vscode.Uri} extensionUri
+ * @param {Pick<ClippyReply, 'message' | 'image'> & Partial<ClippyReply>} reply
+ * @param {{ uri: vscode.Uri, fileText: string, languageId: string }} [source] The file Clippy reviewed; enables implementing the suggestion.
+ * @param {string} [note] Shown when there's no recommendation.
+ */
+function showClippy(extensionUri, { message, image, recommendation = '', line = 0, endLine = 0, change = 'none', codeExample = '' }, source, note = '') {
+  const originalLines = source ? source.fileText.split(/\r?\n/).slice(line - 1, endLine) : [];
+  pendingSuggestion = source && change !== 'none'
+    ? { uri: source.uri, languageId: source.languageId, line, endLine, originalLines, change, codeExample, recommendation }
+    : undefined;
+  renderSuggestion();
+  if (pendingSuggestion) {
+    // Scroll the highlighted lines into view (only if they're off-screen), without moving the cursor.
+    const range = new vscode.Range(line - 1, 0, endLine - 1, 0);
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.uri.toString() === pendingSuggestion.uri.toString()) {
+        editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      }
+    }
+  }
+  // Replies (and errors) make an entrance; "Let me take a look…" just starts thinking.
+  const entrance = image === 'ThinkingClippy.png' ? 'none' : 'roam';
+  clippyState = { message, image, recommendation, line, endLine, change, codeExample, originalLines, note, entrance };
+  renderClippyView(extensionUri);
 }
 
 /**
@@ -351,6 +512,34 @@ async function implementSuggestion() {
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
+  const { extensionUri } = context;
+  // Clippy's speech-bubble yellow, with a bold left edge, his face in the gutter and a mark in the scrollbar.
+  suggestionDecoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    borderStyle: 'solid',
+    borderWidth: '0 0 0 3px',
+    gutterIconPath: vscode.Uri.joinPath(extensionUri, 'ClippyImage', 'DefaultClippy.png'),
+    gutterIconSize: 'contain',
+    overviewRulerColor: 'rgba(255, 204, 0, 0.9)',
+    overviewRulerLane: vscode.OverviewRulerLane.Full,
+    light: { backgroundColor: 'rgba(255, 221, 0, 0.3)', borderColor: '#d4a800' },
+    dark: { backgroundColor: 'rgba(255, 221, 0, 0.15)', borderColor: '#ffcc00' }
+  });
+
+  const viewDisposable = vscode.window.registerWebviewViewProvider('clippy.view', {
+    resolveWebviewView(view) {
+      clippyView = view;
+      view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'ClippyImage')] };
+      view.webview.onDidReceiveMessage((msg) => {
+        if (msg.type === 'implement' || msg.type === 'dismiss') {
+          vscode.commands.executeCommand(`clippy.${msg.type}`);
+        }
+      });
+      view.onDidDispose(() => { clippyView = undefined; });
+      renderClippyView(extensionUri);
+    }
+  }, { webviewOptions: { retainContextWhenHidden: true } });
+
   // onDidSave doesn't say why a file was saved, so remember which saves were manual (Ctrl+S)
   // and skip auto-saves (after delay or on focus change).
   const manualSaves = new Set();
@@ -372,23 +561,64 @@ function activate(context) {
     }
 
     const request = ++latestRequest;
-    showClippy(context, { message: 'Let me take a look…', image: 'DefaultClippy.png' }, undefined, { bounce: false });
+    showClippy(extensionUri, { message: 'Let me take a look…', image: 'ThinkingClippy.png' });
+    revealClippyView();
 
     try {
       const fileText = document.getText();
       const reply = await askOllama(fileText, path.basename(document.fileName));
       if (request === latestRequest) {
-        showClippy(context, reply, { uri: document.uri, fileText });
+        showClippy(extensionUri, reply, { uri: document.uri, fileText, languageId: document.languageId }, 'No code changes to suggest this time.');
       }
     } catch (err) {
       if (request === latestRequest) {
-        showClippy(context, { message: 'Oops, something went wrong.', image: 'DefaultClippy.png' });
+        showClippy(extensionUri, { message: 'Oops, something went wrong.', image: 'AfraidClippy.png' });
       }
       vscode.window.showErrorMessage(`Clippy: could not reach Ollama (${err.message})`);
     }
   });
 
-  context.subscriptions.push(willSaveDisposable, saveDisposable);
+  const codeLensDisposable = vscode.languages.registerCodeLensProvider({ scheme: '*' }, {
+    onDidChangeCodeLenses: codeLensesChanged.event,
+    provideCodeLenses(document) {
+      const suggestion = pendingSuggestion;
+      if (!suggestion || document.uri.toString() !== suggestion.uri.toString() || suggestion.line > document.lineCount) {
+        return [];
+      }
+      const range = new vscode.Range(suggestion.line - 1, 0, suggestion.line - 1, 0);
+      const summary = suggestion.recommendation.replace(/\s+/g, ' ');
+      const lineLabel = suggestion.line === suggestion.endLine ? `line ${suggestion.line}` : `lines ${suggestion.line}-${suggestion.endLine}`;
+      return [
+        // An empty command id shows the title as plain text.
+        new vscode.CodeLens(range, { title: `📎 ${summary.length > 120 ? `${summary.slice(0, 119)}…` : summary}`, command: '' }),
+        new vscode.CodeLens(range, { title: 'Implement', tooltip: `${suggestion.change === 'delete' ? 'Delete' : 'Replace'} ${lineLabel}`, command: 'clippy.implement' }),
+        new vscode.CodeLens(range, { title: 'Dismiss', command: 'clippy.dismiss' })
+      ];
+    }
+  });
+
+  // Implementing or dismissing the suggestion removes it from the editor and the Clippy view, and Clippy relaxes.
+  const finish = (/** @type {string} */ note) => {
+    pendingSuggestion = undefined;
+    renderSuggestion();
+    clippyState = { ...clippyState, image: 'RelaxClippy.png', recommendation: '', change: 'none', codeExample: '', originalLines: [], note, entrance: 'celebrate' };
+    renderClippyView(extensionUri);
+  };
+  const implementDisposable = vscode.commands.registerCommand('clippy.implement', async () => {
+    if (await implementSuggestion()) {
+      finish('Suggestion implemented.');
+    }
+  });
+  const dismissDisposable = vscode.commands.registerCommand('clippy.dismiss', () => finish('Suggestion dismissed.'));
+
+  // Decorations belong to an editor, so redraw the highlight when the file is shown again.
+  const visibleEditorsDisposable = vscode.window.onDidChangeVisibleTextEditors(() => renderSuggestion());
+
+  context.subscriptions.push(
+    suggestionDecoration, codeLensesChanged, viewDisposable,
+    willSaveDisposable, saveDisposable, codeLensDisposable, implementDisposable, dismissDisposable,
+    visibleEditorsDisposable
+  );
 }
 
 function deactivate() { }
