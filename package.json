@@ -23,7 +23,7 @@
       "panel": [
         {
           "id": "clippy",
-          "title": "Clippy",
+          "title": "cClippy",
           "icon": "ClippyImage/DefaultClippy.png"
         }
       ]
@@ -33,7 +33,7 @@
         {
           "type": "webview",
           "id": "clippy.view",
-          "name": "Clippy"
+          "name": "cClippy"
         }
       ]
     },

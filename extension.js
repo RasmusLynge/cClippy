@@ -12,7 +12,8 @@ const IMAGE_BOUNCES = {
   'WaveClippy.png': 'wiggle',
   'AfraidClippy.png': 'shake',
   'RelaxClippy.png': 'sway',
-  'WinkClippy.png': 'tilt'
+  'WinkClippy.png': 'tilt',
+  'PukeClippy.png': 'tilt'
 };
 
 /**
@@ -20,8 +21,8 @@ const IMAGE_BOUNCES = {
  * good code climbs a level, bad code slides down one.
  */
 const LEVELS = [
-  { name: 'Comic Sans Developer', emoji: '🤡' },
-  { name: 'Printer Whisperer', emoji: '🖨️' },
+  { name: 'Scrum Master', emoji: '🤡' },
+  { name: 'WordPress Developer', emoji: '🖨️' },
   { name: '"Works on My Machine" Specialist', emoji: '🤷' },
   { name: 'PowerPoint Architect', emoji: '📊' },
   { name: 'Excel Guru', emoji: '📗' },
@@ -88,7 +89,7 @@ let pendingSuggestion;
  * @property {number} endLine 1-based last file line the change affects; 0 when unknown or none.
  * @property {'replace' | 'delete' | 'none'} change Replace lines line..endLine with codeExample, delete them, or nothing to implement.
  * @property {string} codeExample Replacement code when change is 'replace'; empty otherwise.
- * @property {'good' | 'meh' | 'bad'} verdict Clippy's judgement of the code: good levels the developer up, bad levels them down.
+ * @property {'good' | 'bad'} verdict Clippy's judgement of the code: good levels the developer up, bad levels them down.
  */
 
 /**
@@ -131,7 +132,7 @@ async function askOllama(fileText, fileName) {
           endLine: { type: 'integer' },
           change: { type: 'string', enum: ['replace', 'delete', 'none'] },
           codeExample: { type: 'string' },
-          verdict: { type: 'string', enum: ['good', 'meh', 'bad'] }
+          verdict: { type: 'string', enum: ['good', 'bad'] }
         },
         required: ['message', 'image', 'recommendation', 'line', 'endLine', 'change', 'codeExample', 'verdict']
       }
@@ -185,12 +186,9 @@ async function askOllama(fileText, fileName) {
   } else {
     message = `Looks like ${message.charAt(0).toLowerCase()}${message.slice(1)}`;
   }
-  // Code with something to fix can't be "good"; without a usable verdict, judge by whether there's a recommendation.
+  // Every reply moves the level, so without a usable verdict, judge by whether there's a recommendation.
   /** @type {ClippyReply['verdict']} */
-  let verdict = ['good', 'meh', 'bad'].includes(reply.verdict) ? reply.verdict : recommendation ? 'meh' : 'good';
-  if (verdict === 'good' && recommendation) {
-    verdict = 'meh';
-  }
+  const verdict = reply.verdict === 'good' || reply.verdict === 'bad' ? reply.verdict : recommendation ? 'bad' : 'good';
   return { message, image, recommendation, line, endLine, change, codeExample, verdict };
 }
 
@@ -228,7 +226,7 @@ function renderSuggestion() {
  * @param {ClippyReply['verdict']} verdict
  */
 function changeLevel(context, verdict) {
-  const next = Math.min(Math.max(level + (verdict === 'good' ? 1 : verdict === 'bad' ? -1 : 0), 0), LEVELS.length - 1);
+  const next = Math.min(Math.max(level + (verdict === 'good' ? 1 : -1), 0), LEVELS.length - 1);
   levelChange = next - level;
   level = next;
   context.globalState.update(LEVEL_KEY, level - INTERN);
@@ -261,19 +259,24 @@ function renderClippyView(extensionUri) {
   const nonce = crypto.randomBytes(16).toString('base64');
   const imageUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'ClippyImage', image));
   const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-  // Likewise celebrate (or mourn) a level change once. The ladder bar fills from where it was.
+  // Likewise celebrate (or mourn) a level change once. The ladder's arrow slides from where it was.
   const levelMove = levelChange;
   levelChange = 0;
   const { name: levelName, emoji: levelEmoji } = LEVELS[level];
-  const ladderPercent = (index) => ((index / (LEVELS.length - 1)) * 100).toFixed(1);
   const nextLevel = LEVELS[level + 1];
   const levelHtml = `<header class="level${levelMove > 0 ? ' up' : levelMove < 0 ? ' down' : ''}">
       <span class="level-emoji">${levelEmoji}</span>
       <div class="level-text">
         <div><span class="level-name">${escapeHtml(levelName)}</span> <span class="level-rank">Level ${level + 1}/${LEVELS.length}${nextLevel ? ` · next: ${escapeHtml(nextLevel.name)}` : ' · top of the ladder!'}</span></div>
-        <div class="ladder"><div class="ladder-fill" id="ladder-fill" style="width: ${ladderPercent(level - levelMove)}%" data-to="${ladderPercent(level)}"></div></div>
       </div>
     </header>`;
+  // The whole ladder, best level on top, with an arrow at the developer's level.
+  const ladderHtml = `<ol class="ladder" id="ladder" data-from="${level - levelMove}" data-to="${level}">
+      <span class="ladder-arrow" id="ladder-arrow">➜</span>
+      ${LEVELS.map((rung, i) => ({ ...rung, i })).reverse().map(({ name, emoji, i }) =>
+    `<li class="rung${i === level ? ' current' : ''}${i === INTERN ? ' start' : ''}" data-index="${i}">${emoji} ${escapeHtml(name)}</li>`
+  ).join('')}
+    </ol>`;
   const toastHtml = levelMove ? `<div class="toast ${levelMove > 0 ? 'up' : 'down'}">${levelMove > 0 ? 'LEVEL UP! ⬆' : 'LEVEL DOWN ⬇'}</div>` : '';
   const lineLabel = line === endLine ? `line ${line}` : `lines ${line}-${endLine}`;
   const implementHtml = change !== 'none'
@@ -313,8 +316,18 @@ function renderClippyView(extensionUri) {
     .level-text { flex: 1; min-width: 0; }
     .level-name { font-weight: 700; }
     .level-rank { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
-    .ladder { height: 6px; margin-top: 5px; border-radius: 3px; overflow: hidden; background: var(--vscode-input-background, rgba(128, 128, 128, 0.2)); }
-    .ladder-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #ff5f5f, #ffcc00 45%, #3ccf6e); transition: width 1.2s cubic-bezier(0.3, 1.4, 0.5, 1); }
+
+    /* The ladder: every level, best on top, with an arrow at the developer's. */
+    .ladder { flex: none; align-self: stretch; position: relative; margin: 0; padding: 2px 8px 2px 0; list-style: none; overflow-y: auto; font-size: 0.9em; }
+    .rung { padding: 1px 8px 1px 26px; border-radius: 3px; white-space: nowrap; line-height: 1.6; opacity: 0.55; }
+    .rung.start { font-style: italic; }
+    .rung.current { opacity: 1; font-weight: 700; background: rgba(255, 204, 0, 0.22); box-shadow: inset 3px 0 0 #ffcc00; }
+    .ladder-arrow { position: absolute; left: 4px; margin-top: -0.8em; color: #ffcc00; font-size: 1.1em; font-weight: 900; line-height: 1.6; pointer-events: none; animation: nudge 0.8s ease-in-out infinite; }
+    .ladder-arrow.moving { transition: top 1.2s cubic-bezier(0.3, 1.4, 0.5, 1); }
+    @keyframes nudge {
+      0%, 100% { transform: translateX(0); }
+      50% { transform: translateX(4px); }
+    }
     .level.up { animation: level-up 1.4s ease-out; }
     .level.up .level-emoji { animation: emoji-hop 0.5s ease-out 3; }
     @keyframes emoji-hop {
@@ -437,6 +450,7 @@ function renderClippyView(extensionUri) {
 </head>
 <body>
   <main>${levelHtml}${recommendationHtml}</main>
+  ${ladderHtml}
   <div class="clippy" id="clippy">
     ${toastHtml}
     ${message ? `<div class="bubble">${escapeHtml(message)}</div>` : ''}
@@ -447,9 +461,23 @@ function renderClippyView(extensionUri) {
     document.getElementById('implement')?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
     document.getElementById('dismiss')?.addEventListener('click', () => vscode.postMessage({ type: 'dismiss' }));
 
-    // Fill the ladder from the old level to the new one.
-    const ladderFill = document.getElementById('ladder-fill');
-    requestAnimationFrame(() => requestAnimationFrame(() => { ladderFill.style.width = ladderFill.dataset.to + '%'; }));
+    // Point the ladder's arrow at the old level, then slide it to the new one, keeping it in view.
+    const ladder = document.getElementById('ladder');
+    const arrow = document.getElementById('ladder-arrow');
+    const rung = (index) => ladder.querySelector('[data-index="' + index + '"]');
+    const pointAt = (index) => {
+      const target = rung(index);
+      arrow.style.top = (target.offsetTop + target.offsetHeight / 2) + 'px';
+      ladder.scrollTop = target.offsetTop - (ladder.clientHeight - target.offsetHeight) / 2;
+    };
+    pointAt(ladder.dataset.from);
+    if (ladder.dataset.from !== ladder.dataset.to) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        arrow.classList.add('moving');
+        ladder.style.scrollBehavior = 'smooth';
+        pointAt(ladder.dataset.to);
+      }));
+    }
 
     const clippy = document.getElementById('clippy');
     const body = document.getElementById('body');
