@@ -1,0 +1,21 @@
+{
+  "name": "clippy",
+  "displayName": "Clippy",
+  "description": "Shows a Saved! popup every time you save a file.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "test": "node --check extension.js"
+  },
+  "devDependencies": {}
+}
