@@ -193,6 +193,39 @@ Examples:
   "verdict": "bad"
 }
 
+{
+  "message": "Looks like an if-pyramid. I'm seasick.",
+  "image": "PukeClippy.png",
+  "recommendation": "Three nested ifs in saveUser() just to check the input. One combined condition flattens the pyramid and does the same thing.",
+  "line": 5,
+  "endLine": 11,
+  "change": "replace",
+  "codeExample": "  if (user && user.email && user.email.includes('@')) {\n    db.save(user);\n  }",
+  "verdict": "bad"
+}
+
+{
+  "message": "Looks like copy, paste, paste, paste.",
+  "image": "PukeClippy.png",
+  "recommendation": "The same res.setHeader call is pasted three times in a row. Keep one and delete the leftovers.",
+  "line": 18,
+  "endLine": 19,
+  "change": "delete",
+  "codeExample": "",
+  "verdict": "bad"
+}
+
+{
+  "message": "Looks like a commented-out code graveyard.",
+  "image": "PukeClippy.png",
+  "recommendation": "A whole block of commented-out code is rotting inside handleSubmit(). Git remembers it; delete the corpse.",
+  "line": 30,
+  "endLine": 41,
+  "change": "delete",
+  "codeExample": "",
+  "verdict": "bad"
+}
+
 FILE:
 {{fileName}}
 

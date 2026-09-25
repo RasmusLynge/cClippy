@@ -269,6 +269,7 @@ function renderClippyView(extensionUri) {
       <div class="level-text">
         <div><span class="level-name">${escapeHtml(levelName)}</span> <span class="level-rank">Level ${level + 1}/${LEVELS.length}${nextLevel ? ` · next: ${escapeHtml(nextLevel.name)}` : ' · top of the ladder!'}</span></div>
       </div>
+      <button class="reset-level" id="reset-level" title="Reset level to Intern" aria-label="Reset level to Intern">↺</button>
     </header>`;
   // The whole ladder, best level on top, with an arrow at the developer's level.
   const ladderHtml = `<ol class="ladder" id="ladder" data-from="${level - levelMove}" data-to="${level}">
@@ -318,6 +319,8 @@ function renderClippyView(extensionUri) {
     .level-text { flex: 1; min-width: 0; }
     .level-name { font-weight: 700; }
     .level-rank { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+    .reset-level { flex: none; width: 22px; height: 22px; padding: 0; font-size: 14px; line-height: 1; color: var(--vscode-icon-foreground, inherit); background: transparent; border: none; border-radius: 4px; cursor: pointer; opacity: 0.6; }
+    .reset-level:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2)); }
 
     /* The ladder: every level, best on top, with an arrow at the developer's. */
     .ladder { flex: 1; min-height: 0; max-width: 100%; position: relative; margin: 0; padding: 2px 0; list-style: none; overflow-y: auto; font-size: 0.9em; }
@@ -476,6 +479,7 @@ function renderClippyView(extensionUri) {
     const vscode = acquireVsCodeApi();
     document.getElementById('implement')?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
     document.getElementById('dismiss')?.addEventListener('click', () => vscode.postMessage({ type: 'dismiss' }));
+    document.getElementById('reset-level').addEventListener('click', () => vscode.postMessage({ type: 'resetLevel' }));
 
     // Point the ladder's arrow at the old level, then slide it to the new one, keeping it in view.
     const ladder = document.getElementById('ladder');
@@ -709,7 +713,7 @@ function activate(context) {
       clippyView = view;
       view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'ClippyImage')] };
       view.webview.onDidReceiveMessage((msg) => {
-        if (msg.type === 'implement' || msg.type === 'dismiss') {
+        if (msg.type === 'implement' || msg.type === 'dismiss' || msg.type === 'resetLevel') {
           vscode.commands.executeCommand(`clippy.${msg.type}`);
         }
       });
