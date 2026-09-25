@@ -19,6 +19,34 @@
   },
   "devDependencies": {},
   "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "clippy",
+          "title": "Clippy",
+          "icon": "ClippyImage/DefaultClippy.png"
+        }
+      ]
+    },
+    "views": {
+      "clippy": [
+        {
+          "type": "webview",
+          "id": "clippy.view",
+          "name": "Clippy"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "clippy.implement",
+        "title": "Clippy: Implement Suggestion"
+      },
+      {
+        "command": "clippy.dismiss",
+        "title": "Clippy: Dismiss"
+      }
+    ],
     "configuration": {
       "title": "Clippy",
       "properties": {
