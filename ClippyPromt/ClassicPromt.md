@@ -67,7 +67,7 @@ Return ONLY valid JSON in exactly this structure:
 "verdict" must be exactly one of: "good", "meh", "bad"
 
 "image" must be exactly one of:
-"WaveClippy.png", "WinkClippy.png", "ThinkingClippy.png", "AfraidClippy.png", "RelaxClippy.png", "DefaultClippy.png"
+"WaveClippy.png", "WinkClippy.png", "ThinkingClippy.png", "AfraidClippy.png", "RelaxClippy.png", "DefaultClippy.png", "PukeClippy.png"
 
 Examples:
 

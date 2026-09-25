@@ -3,7 +3,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 
-const CLIPPY_IMAGES = ['DefaultClippy.png', 'WaveClippy.png', 'WinkClippy.png', 'ThinkingClippy.png', 'AfraidClippy.png', 'RelaxClippy.png'];
+const CLIPPY_IMAGES = ['DefaultClippy.png', 'WaveClippy.png', 'WinkClippy.png', 'ThinkingClippy.png', 'AfraidClippy.png', 'RelaxClippy.png', 'PukeClippy.png'];
 
 /** Which bounce (a CSS animation in the Clippy view) each pose gets. */
 const IMAGE_BOUNCES = {
