@@ -101,7 +101,7 @@ let pendingSuggestion;
 async function askOllama(fileText, fileName) {
   const config = vscode.workspace.getConfiguration('clippy');
   const url = config.get('ollamaUrl', 'http://host.docker.internal:11434');
-  const model = config.get('model', 'qwen3.5:4b');
+  const model = config.get('model', 'qwen3-coder:30b');
 
   const template = await fs.readFile(path.join(__dirname, 'ClippyPromt', 'SarcasticPromt.md'), 'utf8');
   // Number the lines so the model can point at the exact line its recommendation is about.
