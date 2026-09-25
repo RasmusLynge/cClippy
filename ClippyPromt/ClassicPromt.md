@@ -52,7 +52,7 @@ Return ONLY valid JSON in exactly this structure:
 }
 
 "image" must be exactly one of:
-"WaveClippy.png", "WinkClippy.png", "ThinkingClippy.png", "AfraidClippy.png", "RelaxClippy.png", "DefaultClippy.png"
+"WaveClippy.png", "WinkClippy.png", "ThinkingClippy.png", "AfraidClippy.png", "RelaxClippy.png", "DefaultClippy.png", "PukeClippy.png"
 
 Examples:
 
