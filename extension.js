@@ -13,7 +13,7 @@ const IMAGE_BOUNCES = {
   'AfraidClippy.png': 'shake',
   'RelaxClippy.png': 'sway',
   'WinkClippy.png': 'tilt',
-  'PukeClippy.png': 'tilt'
+  'PukeClippy.png': 'retch'
 };
 
 /**
@@ -21,7 +21,7 @@ const IMAGE_BOUNCES = {
  * good code climbs a level, bad code slides down one.
  */
 const LEVELS = [
-  { name: 'Scrum Master', emoji: '🤡' },
+  { name: 'Agile Coach', emoji: '🤡' },
   { name: 'WordPress Developer', emoji: '🖨️' },
   { name: '"Works on My Machine" Specialist', emoji: '🤷' },
   { name: 'PowerPoint Architect', emoji: '📊' },
@@ -308,17 +308,19 @@ function renderClippyView(extensionUri) {
   <style>
     html, body { height: 100%; margin: 0; }
     body { display: flex; align-items: flex-end; gap: 16px; box-sizing: border-box; padding: 12px 16px; font-family: var(--vscode-font-family); }
+    /* Three columns: the recommendation takes the free space on the left; Clippy and then the levels sit at the far right. */
     main { flex: 1; min-width: 0; align-self: stretch; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .levels { flex: none; max-width: 40%; margin-left: auto; align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 
     /* The level badge: where the developer is on the ladder. */
-    .level { display: flex; align-items: center; gap: 10px; max-width: 720px; box-sizing: border-box; padding: 6px 12px; border-radius: 6px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
+    .level { flex: none; display: flex; align-items: center; gap: 10px; max-width: 100%; box-sizing: border-box; padding: 6px 12px; border-radius: 6px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
     .level-emoji { display: inline-block; font-size: 1.8em; line-height: 1; }
     .level-text { flex: 1; min-width: 0; }
     .level-name { font-weight: 700; }
     .level-rank { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
 
     /* The ladder: every level, best on top, with an arrow at the developer's. */
-    .ladder { flex: none; align-self: stretch; position: relative; margin: 0; padding: 2px 8px 2px 0; list-style: none; overflow-y: auto; font-size: 0.9em; }
+    .ladder { flex: 1; min-height: 0; max-width: 100%; position: relative; margin: 0; padding: 2px 0; list-style: none; overflow-y: auto; font-size: 0.9em; }
     .rung { padding: 1px 8px 1px 26px; border-radius: 3px; white-space: nowrap; line-height: 1.6; opacity: 0.55; }
     .rung.start { font-style: italic; }
     .rung.current { opacity: 1; font-weight: 700; background: rgba(255, 204, 0, 0.22); box-shadow: inset 3px 0 0 #ffcc00; }
@@ -439,6 +441,16 @@ function renderClippyView(extensionUri) {
       5%, 35% { transform: translateY(0) scale(1.15, 0.85); animation-timing-function: ease-out; }
       20% { transform: translateY(-40px) rotate(-20deg); animation-timing-function: ease-in; }
     }
+    /* Heaves: swells up, lurches forward, then shudders. */
+    @keyframes retch {
+      0%, 100% { transform: translate(0, 0) rotate(0) scale(1, 1); }
+      20% { transform: translate(0, 0) rotate(-4deg) scale(0.92, 1.12); }
+      35% { transform: translate(-10px, 6px) rotate(14deg) scale(1.15, 0.85); }
+      45% { transform: translate(-12px, 6px) rotate(16deg) scale(1.1, 0.9); }
+      50% { transform: translate(-9px, 5px) rotate(12deg) scale(1.12, 0.88); }
+      55% { transform: translate(-12px, 6px) rotate(16deg) scale(1.1, 0.9); }
+      75% { transform: translate(0, 0) rotate(0) scale(1, 1); }
+    }
     /* Always animated, even when the OS asks for reduced motion: bouncing is the whole point of Clippy. */
     .clippy img.hop { animation: hop 0.8s infinite; }
     .clippy img.float { animation: float 1.2s ease-in-out infinite alternate; }
@@ -446,16 +458,20 @@ function renderClippyView(extensionUri) {
     .clippy img.shake { animation: shake 0.2s linear infinite; }
     .clippy img.sway { animation: sway 1.5s ease-in-out infinite alternate; }
     .clippy img.tilt { animation: tilt 1.4s infinite; }
+    .clippy img.retch { animation: retch 1.3s ease-in-out infinite; }
   </style>
 </head>
 <body>
-  <main>${levelHtml}${recommendationHtml}</main>
-  ${ladderHtml}
+  <main>${recommendationHtml}</main>
   <div class="clippy" id="clippy">
     ${toastHtml}
     ${message ? `<div class="bubble">${escapeHtml(message)}</div>` : ''}
     <div class="body" id="body"><img class="${bounce}" src="${imageUri}" alt="cClippy"></div>
   </div>
+  <aside class="levels">
+    ${levelHtml}
+    ${ladderHtml}
+  </aside>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     document.getElementById('implement')?.addEventListener('click', () => vscode.postMessage({ type: 'implement' }));
